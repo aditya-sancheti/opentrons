@@ -694,8 +694,11 @@ class OT3API(
 
     async def halt(self) -> None:
         """Immediately stop motion."""
+        mod_log.error("DEBUG-NOTE: CALLING AWAIT HARD_HALT")
         await self._backend.hard_halt()
+        mod_log.error("DEBUG-NOTE: CALLING ASYNCIO RUN COUROUTINE THREADSAFE EXECUTION MANAGER CANCEL")
         asyncio.run_coroutine_threadsafe(self._execution_manager.cancel(), self._loop)
+        mod_log.error("DEBUG-NOTE: CALLED ASYNCIO RUN COURITINE THREADSAFE EXECUTION MANAGER CANCEL")
 
     async def stop(self, home_after: bool = True) -> None:
         """Stop motion as soon as possible, reset, and optionally home."""

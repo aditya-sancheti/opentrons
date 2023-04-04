@@ -42,6 +42,10 @@ from .actions import (
     SetPipetteMovementSpeedAction,
 )
 
+import logging
+
+_error_log = logging.getLogger(__name__)
+
 
 class ProtocolEngine:
     """Main ProtocolEngine class.
@@ -200,9 +204,13 @@ class ProtocolEngine:
         to clean up resources and propagate errors.
         """
         action = self._state_store.commands.validate_action_allowed(StopAction())
+        _error_log.error("DEBUG-NOTE: Dispatching StopAction()")
         self._action_dispatcher.dispatch(action)
+        _error_log.error("DEBUG-NOTE: Cancelling queue working")
         self._queue_worker.cancel()
+        _error_log.error("DEBUG-NOTE: Awaiting hardware_stopper.do_halt()")
         await self._hardware_stopper.do_halt()
+        _error_log.error("DEBUG-NOTE: Called await hardware_stopper.do_halt()")
 
     async def wait_until_complete(self) -> None:
         """Wait until there are no more commands to execute.
@@ -245,11 +253,13 @@ class ProtocolEngine:
         else:
             error_details = None
 
+        _error_log.error("DEBUG-NOTE: Dispatching FinishAction()")
         self._action_dispatcher.dispatch(
             FinishAction(error_details=error_details, set_run_status=set_run_status)
         )
 
         try:
+            _error_log.error("DEBUG-NOTE: Awaiting queue_worker.join()")
             await self._queue_worker.join()
 
         # todo(mm, 2022-01-31): We should use something like contextlib.AsyncExitStack
@@ -259,14 +269,17 @@ class ProtocolEngine:
             # Note: After we stop listening, straggling events might be processed
             # concurrently to the below lines in this .finish() call,
             # or even after this .finish() call completes.
+            _error_log.error("DEBUG-NOTE: Unsubscribing door watcher subscriptions")
             self._door_watcher.stop_soon()
 
             await self._hardware_stopper.do_stop_and_recover(drop_tips_and_home)
 
             completed_at = self._model_utils.get_timestamp()
+            _error_log.error("DEBUG-NOTE: Dispatching HardwareStoppedAction()")
             self._action_dispatcher.dispatch(
                 HardwareStoppedAction(completed_at=completed_at)
             )
+            _error_log.error("DEBUG-NOTE: Stopping plugin_starter")
             await self._plugin_starter.stop()
 
     def add_labware_offset(self, request: LabwareOffsetCreate) -> LabwareOffset:

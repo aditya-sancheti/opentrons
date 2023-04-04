@@ -6,6 +6,10 @@ from .errors import ExecutionCancelledError
 
 TaskContents = TypeVar("TaskContents")
 
+import logging
+
+ex_log = logging.getLogger(__name__)
+
 
 class ExecutionManager:
     """This class holds onto a flag that is up/set while the hardware
@@ -39,13 +43,16 @@ class ExecutionManager:
                 self._condition.notify_all()
 
     async def cancel(self) -> None:
+        ex_log.error("DEBUG-NOTE: STARTING EXECUTION MANAGER CANCEL")
         async with self._condition:
             self._state = ExecutionState.CANCELLED
             self._condition.notify_all()
             running_task = asyncio.current_task()
             for t in self._cancellable_tasks:
                 if t is not running_task:
+                    ex_log.error(f"DEBUG-NOTE: CANCELLING {t}")
                     t.cancel()
+        ex_log.error("DEBUG-NOTE: FINISHED EXECUTION MANAGER CANCEL")
 
     async def reset(self) -> None:
         async with self._condition:

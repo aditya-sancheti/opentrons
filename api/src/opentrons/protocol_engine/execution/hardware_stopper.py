@@ -97,7 +97,10 @@ class HardwareStopper:
 
     async def do_stop_and_recover(self, drop_tips_and_home: bool = False) -> None:
         """Stop and reset the HardwareAPI, optionally dropping tips and homing."""
+        log.error("DEBUG-NOTE: Entering do_stop_and_recover")
         if drop_tips_and_home:
+            log.error("DEBUG-NOTE: Dropping tip during 'finish'")
             await self._drop_tip()
 
+        log.error(f"DEBUG-NOTE: Calling hardware api stop with home_after={drop_tips_and_home}")
         await self._hardware_api.stop(home_after=drop_tips_and_home)
