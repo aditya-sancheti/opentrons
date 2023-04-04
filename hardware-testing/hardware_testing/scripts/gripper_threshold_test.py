@@ -7,7 +7,8 @@ import time
 from opentrons_shared_data.deck import load
 from opentrons.hardware_control.ot3api import OT3API
 from opentrons.hardware_control.ot3_calibration import (
-    calibrate_pipette,
+    calibrate_gripper_jaw,
+    calibrate_gripper,
     find_deck_height,
     _probe_deck_at,
     _get_calibration_square_position_in_slot,
@@ -31,27 +32,30 @@ def build_arg_parser():
     arg_parser.add_argument('-c', '--cycles', type=int, required=False, help='Number of testing cycles', default=1)
     arg_parser.add_argument('-t', '--trials', type=int, required=False, help='Number of measuring trials', default=10)
     arg_parser.add_argument('-o', '--slot', type=int, required=False, help='Deck slot number', default=5)
+    arg_parser.add_argument('-p', '--probe', choices=['front','rear','both'], required=False, help='The gripper probe to be tested', default='both')
     arg_parser.add_argument('-s', '--simulate', action="store_true", required=False, help='Simulate this test script')
     return arg_parser
 
 class Gripper_Threshold_Test:
     def __init__(
-        self, simulate: bool, cycles: int, trials: int, slot: int
+        self, simulate: bool, cycles: int, trials: int, slot: int, probes
     ) -> None:
         self.simulate = simulate
         self.cycles = cycles
         self.trials = trials
         self.slot = slot
+        self.probes = probes
         self.api = None
         self.mount = None
         self.home = None
-        self.pipette_id = None
+        self.gripper_id = None
         self.deck_definition = None
         self.deck_height = None
         self.nominal_center = None
         self.jog_step_forward = 0.1
         self.jog_step_backward = -0.01
         self.jog_speed = 10 # mm/s
+        self.GRIP_FORCE = 20 # N
         self.START_HEIGHT = 3 # mm
         self.PROBE_DIA = 4 # mm
         self.CUTOUT_SIZE = 20 # mm
@@ -75,7 +79,8 @@ class Gripper_Threshold_Test:
             "Cycle":"None",
             "Trial":"None",
             "Slot":"None",
-            "Pipette":"None",
+            "Gripper":"None",
+            "Probe":"None",
             "Z Gauge":"None",
             "Z Zero":"None",
             "Deck Height":"None",
@@ -93,21 +98,23 @@ class Gripper_Threshold_Test:
             "Y":Point(x=-5, y=-5, z=9),
             "Z":Point(x=0, y=0, z=9),
         }
+        self.gripper_probes = {
+            "Front":GripperProbe.FRONT,
+            "Rear":GripperProbe.REAR,
+        }
         self.thresholds = [1.0, 2.0, 3.0, 4.0, 5.0]
 
     async def test_setup(self):
         self.file_setup()
         self.gauge_setup()
         self.api = await build_async_ot3_hardware_api(is_simulating=self.simulate, use_defaults=True)
-        self.mount = OT3Mount.LEFT if args.mount == "l" else OT3Mount.RIGHT
+        self.mount = OT3Mount.GRIPPER
         self.nominal_center = _get_calibration_square_position_in_slot(self.slot)
-        # self.nominal_center = self.nominal_center._replace(y=self.nominal_center.y) # single-channel
-        self.nominal_center = self.nominal_center._replace(y=self.nominal_center.y - 6) # multi-channel
         if self.simulate:
-            self.pipette_id = "SIMULATION"
+            self.gripper_id = "SIMULATION"
         else:
-            self.pipette_id = self.api._pipette_handler.get_pipette(self.mount)._pipette_id
-        self.test_data["Pipette"] = str(self.pipette_id)
+            self.gripper_id = self.api._gripper_handler.get_gripper().gripper_id
+        self.test_data["Gripper"] = str(self.gripper_id)
         self.test_data["Slot"] = str(self.slot)
         self.deck_definition = load("ot3_standard", version=3)
         self.start_time = time.time()
@@ -225,7 +232,7 @@ class Gripper_Threshold_Test:
         z_gauge = await self._read_gauge("Z")
         self.test_data["Z Gauge"] = str(z_gauge)
         print(f"Z Gauge = ", self.test_data["Z Gauge"])
-        await api.remove_tip(mount)
+        api.remove_gripper_probe()
 
     async def _get_deck_height(
         self, api: OT3API, mount: OT3Mount, nominal_center: Point
@@ -236,10 +243,12 @@ class Gripper_Threshold_Test:
         return deck_z
 
     async def _calibrate_probe(
-        self, api: OT3API, mount: OT3Mount, slot: int, nominal_center: Point
+        self, api: OT3API, mount: OT3Mount, slot: int, nominal_center: Point, gripper_probe
     ) -> None:
-        # Calibrate pipette
-        await api.add_tip(mount, api.config.calibration.probe_length)
+        # Calibrate gripper probe
+        await api.home_gripper_jaw()
+        api.add_gripper_probe(gripper_probe)
+        await api.grip(self.GRIP_FORCE)
         home = await api.gantry_position(mount)
         self.deck_height = await self._get_deck_height(api, mount, nominal_center)
         self.test_data["Deck Height"] = str(self.deck_height)
@@ -276,18 +285,21 @@ class Gripper_Threshold_Test:
                 for i in range(self.cycles):
                     cycle = i + 1
                     print(f"\n-> Starting Test Cycle {cycle}/{self.cycles}")
-                    for j in range(len(self.thresholds)):
-                        threshold = self.thresholds[j]
-                        self._update_threshold(threshold)
-                        print(f"\nUpdated Z Threshold to {self.PROBE_SETTINGS_Z_AXIS.sensor_threshold_pf} pF!")
-                        await self._home(self.api, self.mount)
-                        for k in range(self.trials):
-                            trial = k + 1
-                            print(f"\n-->> Measuring Trial {trial}/{self.trials} (Threshold = {threshold})")
-                            await self._calibrate_probe(self.api, self.mount, self.slot, self.nominal_center)
-                            await self._measure_gauge(self.api, self.mount, self.slot)
-                            self._record_data(cycle, trial, threshold)
-                        await self._reset(self.api, self.mount)
+                    for probe in self.probes:
+                        self.test_data["Probe"] = probe
+                        gripper_probe = self.gripper_probes[probe]
+                        for j in range(len(self.thresholds)):
+                            threshold = self.thresholds[j]
+                            self._update_threshold(threshold)
+                            print(f"\nUpdated Z Threshold to {self.PROBE_SETTINGS_Z_AXIS.sensor_threshold_pf} pF!")
+                            await self._home(self.api, self.mount)
+                            for k in range(self.trials):
+                                trial = k + 1
+                                print(f"\n-->> Measuring Trial {trial}/{self.trials} (Threshold = {threshold})")
+                                await self._calibrate_probe(self.api, self.mount, self.slot, self.nominal_center, gripper_probe)
+                                await self._measure_gauge(self.api, self.mount, self.slot)
+                                self._record_data(cycle, trial, threshold)
+                            await self._reset(self.api, self.mount)
         except Exception as e:
             await self.exit()
             raise e
@@ -302,5 +314,13 @@ if __name__ == '__main__':
     print("\nOT-3 Gripper Threshold Test\n")
     arg_parser = build_arg_parser()
     args = arg_parser.parse_args()
-    test = Gripper_Threshold_Test(args.simulate, args.cycles, args.trials, args.slot)
+    probes = []
+    if args.probe == 'both':
+        probes.append("Front")
+        probes.append("Rear")
+    elif args.probe == 'front':
+        probes.append("Front")
+    elif args.probe == 'rear':
+        probes.append("Rear")
+    test = Gripper_Threshold_Test(args.simulate, args.cycles, args.trials, args.slot, probes)
     asyncio.run(test.run())
